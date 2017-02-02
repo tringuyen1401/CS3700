@@ -1,0 +1,348 @@
+#!/usr/bin/python -u    
+# The -u makes output unbuffered, so it will show up immediately
+import sys
+import socket
+import select
+import json
+from time import time
+
+# Class to represent each port on this bridge
+class Port:
+    def __init__(self,socket,pid, lid):
+        self.socket = socket
+        self.pid = pid
+        self.lid = lid       
+        self.is_des_port = True
+
+# Last BPDU check for new bridges
+lastSpanning = time()
+# Keeps track of last timeout check
+timeoutCheck = 0
+# Creating dictionary to keep track of ports hosts connect through 
+forwardingTable = {}
+# What this bridge considers the root
+cur_root= ''
+#current port pointing to the root 
+cur_root_port = ''
+#cost should be int
+cur_cost = 0
+#cur_des_path= ''
+cur_bpdu = ''
+# Our bridge ID
+cur_bid = ''
+# Last time a bpdu was sent
+bpdu_sent = 0 
+#table of received bpdu-port for each port
+bpdutable = {}
+#table to store message for later sending
+received_mess= []
+
+# pads the name with null bytes at the end
+def pad(name):
+    result = '\0' + name
+    while len(result) < 108:
+        result += '\0'
+    return result
+
+# Adds new information into the forawarding table for given dataID
+def addToTable(port, source):
+    forwardingTable[source] = {}
+    forwardingTable[source]['port'] = port
+    forwardingTable[source]['time'] = time()
+
+# Checks if path is in forwarding table, returns index if true
+def forwardingCheck(source):
+    if source in forwardingTable:
+return forwardingTable[source]['port']
+    else:
+return -1
+
+# Checks if data has already been received then close which ever port that is not
+# connected to the root_port of other bridges. Also only perform this on bridge with
+# larger bid
+def is_dup_receive(data,port):
+    global bpdutable
+    d_root_port = data['root_port']
+    mess = data['message']
+    for x in bpdutable:
+        if (x == data['source'] and bpdutable[x]['pid'] != port.pid and mess['id'] < cur_bid):
+            if (d_root_port == 0):
+                close(ports[port.pid])
+               
+            if (bpdutable[x]['root_port'] == 0):
+                close(ports[bpdutable[x]['pid']])
+ 
+            return True
+    addToBpdu(data,port)
+    return False
+
+#close a port
+def close(port):
+    port.is_des_port = False
+    print("Disabled Port: " + str(port.pid))
+    forwardingTable.clear()
+  
+
+# check if it receive duplicate of bpdu from all the ports and only let the port with smallest port id open
+# only perform on bridge with larger bid
+def is_dup_bpdu(data, port):
+    global bpdutable
+    d_bid = data['message']['id']
+    if (cur_root != cur_bid):
+        if (data['root_port'] == 0):
+            for x in bpdutable:
+                #if packet exist but port number not equal
+                if (x == data['source'] and bpdutable[x]['pid'] != port.pid and d_bid < cur_bid):
+                    
+                    if (bpdutable[x]['pid'] < port.pid and ports[bpdutable[x]['pid']].pid != cur_root_port):
+                        ports[port.pid].is_des_port = False
+                        print("Designated port: "+str(cur_bid)+"/"+str(bpdutable[x]['pid']))
+return True
+                    else:
+                        ports[bpdutable[x]['pid']].is_des_port = False
+                        del bpdutable[x]
+                        print("Designated port: "+str(cur_bid)+"/"+str(port.pid)) 
+                        addToBpdu(data,port)
+                        return True
+                    
+    #add packet/port in bpdutable if not exist
+    addToBpdu(data,port)
+    return False    
+
+#add bpdu data to the bpdutable
+def addToBpdu(data, port):
+    global lastSpanning
+    bid = data['message']['id']
+    source = data['source']
+    bpdutable[source] = {}
+    bpdutable[source]['pid'] = port.pid
+    bpdutable[source]['root_port'] = data['root_port']
+    bpdutable[source]['time'] = time()
+    lastSpanning = time()
+
+#update bpdu with cur_bpdu
+def bpdu_update(port):
+    global cur_root
+    global cur_cost
+    global des_table
+    global cur_root_port
+    data = json.loads(cur_bpdu)
+    mess = data['message']
+    cur_root = mess['root']
+    print("New Root: " + str(cur_bid)+"/"+str(cur_root))
+    cur_cost =int(mess['cost'])+1
+    cur_root_port = port
+    print("Root Port: " +str(cur_bid)+"/"+ str(port.pid)) 
+    forwardingTable.clear() 
+    ports[port.pid].is_des_port = True
+        
+
+#broadcast bpdu to other bridges
+def send_bpdu(port):
+    global bpdu_sent
+    bpdu_sent = time()
+    bpdu = {}
+    ori_bpdu = {}
+    mess = {}
+    mess['id'] = str(cur_bid)
+    mess['root'] = cur_root
+    mess['cost'] = str(cur_cost)
+    
+    bpdu['source'] = cur_bid
+    bpdu['dest'] = 'ffff'
+    bpdu['type'] = 'bpdu'
+    bpdu['message'] = mess
+    #let receiver's port know this is a root port,don't close port connected to this port
+    if (cur_root_port == port):
+        bpdu['root_port'] = 1
+    else:
+        bpdu['root_port'] = 0
+    #send bpdu to all ports
+    for port in ports:
+        packet = json.dumps(bpdu)
+        port.socket.sendall(packet)
+
+# Checks the forwarding table for timeouts
+def checkForwardingTimeout():
+        currentTime = time()
+        for x in forwardingTable:
+                if currentTime - forwardingTable[x]['time'] >= 10:
+                        print("Forwarding Table Timeout Detected")
+                        return True
+        return False
+
+# Checks to make sure that the bpdu tbale doesn't have timeouts
+def checkBpduTimeout():
+currentTime = time()
+for x in bpdutable:
+if currentTime - bpdutable[x]['time'] >= 2:
+print("BPDU Timeout Detected")
+return True
+return False
+
+# Checks to see if source of bdpu exists in bpdu table
+def bpduTableCheck(source):
+for x in bpdutable.keys():
+if source == x:
+bpdutable[x]['time'] = time()
+return True
+return False
+
+# Resets the bridge completely
+def flush():
+    global lastFlush
+    lastFlush= time() 
+    forwardingTable.clear()
+    cur_root= cur_bid
+    cur_root_port = ''
+    cur_cost = 0
+    bpdu_sent = 0 
+    bpdutable.clear()
+    lastSpanning = time()
+    print("Data Flushed")
+    for port in ports:
+        port.is_des_port = True
+
+# Fuction to send a packet
+def send_data(packet, port):
+    data = json.loads(packet)
+    destCheck = forwardingCheck(data['dest'])
+    mess = data['message']
+
+    #check for dup host received from multiple ports
+    #if this port is blocked,dont care about data packet
+    if (destCheck == -1 or not ports[destCheck.pid].is_des_port):
+    #send data to all opened ports
+        print('Broadcasting message '+str(mess['id'])+' to all ports')
+        for i in ports:
+            if (i.is_des_port and i.pid != port.pid):
+                i.socket.sendall(packet)
+                
+    #else if destination is known
+    else: 
+        if (ports[destCheck.pid].is_des_port and ports[destCheck.pid].pid != port.pid): 
+            print('Forwarding message '+str(mess['id'])+' to port '+str(destCheck.pid))
+            # Updates time in forwarding table
+            forwardingTable[data['source']]['time'] = time()
+            #send data to that port
+            ports[destCheck.pid].socket.sendall(packet)
+
+
+# Takes the message and parses the data
+def receive_mess(packet,port):
+    global cur_bpdu
+    global timeSpanning
+    global lastSpanning
+
+    data = json.loads(packet)
+
+    if (data['type'] == 'bpdu'):
+        mess = data['message']
+        
+# Will check periodically for new bridges
+        cur_time = time()
+    if ((cur_time - lastSpanning >= 1.5) and not bpduTableCheck(data['source'])):
+print ("New Bridge Detected")
+lastSpanning = time()
+flush()
+
+        is_dup_receive(data,port)
+        checkBpdu(packet, port)
+                    
+    else:
+        # set's up forwarding table for hosts
+        # Where the packet is from and where it plans on going    
+        destination = data['dest']
+        source = data['source']
+
+        # Checks forwarding table for matching value
+        sourceCheck = forwardingCheck(source)
+        destCheck = forwardingCheck(destination)
+        
+        # Adds source to forwarding table if not there already
+        if sourceCheck == -1:
+            # If not in table already adds data to table
+            addToTable(port,data['source'])
+
+        if (port.is_des_port):
+            print('Received message '+str(data['message']['id'])+' on port '+str(port.pid)+' from '+str(data['source'])+' to '+str(data['dest']))
+            cur_time = time()
+            send_data(packet,port)
+        else:
+            print('Not forwarding message '+str(data['message']['id']))
+
+# Updates our root information according to bpdu information
+def checkBpdu(packet, port):
+    global cur_bpdu
+    data = json.loads(packet)
+    mess = data['message']
+
+    if not is_dup_bpdu(data, port) and mess['id'] != cur_bid:
+d_root = mess['root']
+d_cost = mess['cost']
+d_bid = mess['id']
+
+# Updates bridge according to bpdu table
+if d_root < cur_root:
+    cur_bpdu = packet
+    bpdu_update(port)
+elif cur_root == d_root and d_cost < cur_cost:
+    cur_bpdu = packet
+    bpdu_update(port)
+elif cur_root == d_root and d_cost == cur_cost and d_bid < cur_bid:
+    cur_bpdu = packet
+    bpdu_update(port)
+
+
+   
+if __name__ == "__main__":
+        id = sys.argv[1]
+        LAN = sys.argv[2:]
+        sockets = []    
+        cur_root = id   
+        cur_bid = id
+        ports = []
+        lanlist = []
+        lanlist = sys.argv[2:] 
+
+        # creates sockets and connects to them
+        i = 0
+        for x in range(len(LAN)):
+                del lanlist[0]
+                if LAN[x] in lanlist:
+                    continue
+                else:
+                    s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                    s.connect(pad(LAN[x]))
+                    #map for port ids and declare the status to OPEN
+                    new_port = Port(s,i, LAN[x])
+                    i += 1
+                    sockets.append(s)
+                    ports.append(new_port)
+        
+        print "Bridge " + id + " starting up\n"
+ 
+        # Main loop
+        while True:
+            # Calls select with all the sockets; change the timeout value (1)
+            ready, ignore, ignore2 = select.select(sockets, [], [], 1)
+            
+    # Periodically check for timeouts
+            cur_time = time()
+            if (cur_time - timeoutCheck >= 1.5):
+                if (checkForwardingTimeout()): 
+                    flush()
+                if (checkBpduTimeout()): 
+                    flush()
+                timeoutCheck = time()
+
+            # Reads from each fo the ready Socket objects
+            for port in ports:
+                cur_time = time()
+                if (cur_time - bpdu_sent >= .5):
+                    send_bpdu(port)
+
+                if (port.socket in ready):
+                    data = port.socket.recv(1500)
+                    receive_mess(data,port)
+

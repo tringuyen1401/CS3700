@@ -1,0 +1,103 @@
+#!/usr/bin/python -u
+#
+# CS3700, Spring 2015
+# Project 2 Starter Code
+#
+
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+
+def log(string):
+  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+MSG_SIZE = 1500
+TIMEOUT = 30
+
+LAST_ACK = 0
+
+# Bind to localhost and an ephemeral port
+UDP_IP = "127.0.0.1"
+UDP_PORT = 0
+
+ACK_BUFFER = {}
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+sock.bind((UDP_IP, UDP_PORT))
+sock.settimeout(TIMEOUT)
+
+# Get port we bound to
+UDP_PORT = sock.getsockname()[1]
+log("[bound] " + str(UDP_PORT))
+
+def send_ack():
+  global LAST_ACK
+  msg = json.dumps({"ack": LAST_ACK})
+  log("ABOUT TO SEND " + msg)
+  if sock.sendto(msg, addr) < len(msg):
+    log("[error] unable to fully send packet")
+  log('Done SENDING '+ msg)
+
+
+# Now listen for packets
+while True:
+  result = sock.recvfrom(MSG_SIZE)
+
+  # If nothing is ready, we hit the timeout
+  if result:
+    (data, addr) = result
+
+    try:
+      decoded = json.loads(data)
+
+      # If the EOF flag is set, exit
+      if (decoded['eof']):
+        log("[completed]")
+        sys.exit(0)
+
+      seq = decoded['sequence']
+      #flag for out of order check,assume everything is OOO
+      ooo = True
+      if seq in ACK_BUFFER:
+        log('RECEIVED PACKET IN BUFFER')
+      elif seq < LAST_ACK:
+        log('IGNORE SINCE DUP')
+      else:
+        #ADD data in the dictionary, then sort it ascendingly
+        ACK_BUFFER[seq] = decoded['data']
+        order = sorted(ACK_BUFFER.keys())
+        #check if the smallest ACK is equal the ACK we should receive if it's in order      
+        is_correct = (order[0] == LAST_ACK)
+        while is_correct:
+          #get the smallest ACK in BUFFER
+          rs = ACK_BUFFER[order[0]]
+          sys.stdout.write(rs)
+          #increase the ACK
+          LAST_ACK += len(rs)
+          send_ack()
+          ooo = False
+          #delete the smallest ACK since it's already sent
+          del ACK_BUFFER[order[0]]
+          del order[0]
+          #if EMPTY BUFFER then quit else continue
+          if len(order) == 0:
+            break
+          else:
+            is_correct = order[0] == LAST_ACK
+     
+#if it's really out of order, send LAST_ACK to 3700send
+      if ooo:
+        log("SEND ACK FOR Out Of Order ")
+        send_ack()
+      log("BUFFER SIZE "+ str(len(ACK_BUFFER)))
+
+    except (ValueError, KeyError, TypeError) as e:
+      log("[recv corrupt packet]")
+      raise e
+  else:
+    log("[error] timeout")
+    sys.exit(-1)

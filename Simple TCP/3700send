@@ -1,0 +1,141 @@
+#!/usr/bin/python -u
+#
+# CS3700, Spring 2015
+# Project 2 Starter Code
+#
+
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+
+MSG_SIZE = 1500
+DATA_SIZE = 1000
+TIMEOUT = 1 
+SEQUENCE = 0
+
+# Bind to localhost and an ephemeral port
+IP_PORT = sys.argv[1]
+UDP_IP = IP_PORT[0:IP_PORT.find(":")]
+UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
+dest = (UDP_IP, UDP_PORT)
+
+MSG_BUFFER = []
+ACK_BUFFER = []
+
+NUM_SENT = 0
+
+
+
+CUR_ACK = -1
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+sock.settimeout(TIMEOUT)
+
+#log for debugging
+def log(string):
+  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+#send data to recv
+def send_packet(data):
+  msg = json.dumps(data)
+  if sock.sendto(msg, dest) < len(msg):
+    log("[error] unable to fully send packet")
+    return False
+  else:
+    log("[send data] " + str(data['sequence']) + " (" + str(len(data['data'])) + ")")
+    return True
+
+#read the data stream fron stdin,exit if no more input 
+def read_data():
+  global SEQUENCE
+
+  data = sys.stdin.read(DATA_SIZE)
+  while (len(data) > 0):
+    msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
+    SEQUENCE += len(data)
+    last_msg = json.loads(msg)
+    #add the message to BUFFER, and its according ACK num
+    MSG_BUFFER.append(last_msg)
+    ACK_BUFFER.append(SEQUENCE)
+    data = sys.stdin.read(DATA_SIZE)
+
+#send the maximum number of packets allowed
+def send_next_packet():
+  global NUM_SENT
+  #Send 5 or the remaining in MSG_BUFFER
+  NUM_SENT = min(len(MSG_BUFFER), 7)
+  for i in range(NUM_SENT):
+    msg = MSG_BUFFER[i]
+    send_packet(msg)
+
+#read data 
+read_data()
+# Send first batch
+send_next_packet()
+
+# Now read in data, send packets
+while True:
+  log("ABOUT TO SLEEP")
+  received = 0
+#continue until all the ACK have been received, then repeat the cycle
+  while received < NUM_SENT:
+    try:
+      result = sock.recvfrom(MSG_SIZE)
+
+      if result:
+        (data, addr) = result
+        try:
+          decoded = json.loads(data)
+          d_ack = decoded['ack']
+          #CUR_ACK is to recognize the DUP_ACK
+          if CUR_ACK < 0:
+            CUR_ACK = d_ack
+            DUP_ACK = 1
+          else:
+            if CUR_ACK == d_ack:
+                DUP_ACK += 1
+            elif CUR_ACK < d_ack:
+                DUP_ACK = 1
+                CUR_ACK = d_ack
+          #Resend the recent packets in MSG_BUFFER if receive 3 DUP ACK
+          if DUP_ACK == 3:
+            log("RESENDING PACKETS, CUR_ACK =" +str(CUR_ACK))
+            break
+      # If there is an ack, increase received number
+          seq = ACK_BUFFER[0]
+          if decoded['ack'] == seq:
+            log("[recv ack] " + str(seq))
+            received += 1
+            log ('NUMBER OF ACK RECEIVED  '+str(received))
+            del MSG_BUFFER[0]
+            del ACK_BUFFER[0]            
+            log('LEN OF MSG_BUFFER ' + str(len(MSG_BUFFER)))
+        #If we receive a larger ACK than the smallest one in the BUFFER,then something happen, but since we also implement the ACK-IN-ORDER check in 3700recv this means recv already have the smaller one so yeah, start again from this larger ACK
+          elif decoded['ack'] > seq:
+            log("LARGER ACK RECEIVED" + str(seq))
+#if the received ACK is in the BUFFER, DELETE all smaller ACKs and increment the 'received' to reflect the number of ACKs we should have received
+            if decoded['ack'] in ACK_BUFFER:
+              del_num = ACK_BUFFER.index(decoded['ack'])
+              for i in range(del_num +1):
+                received += 1
+                del MSG_BUFFER[0]
+                del ACK_BUFFER[0]
+              log("DEL SMALLER ACK " + str(del_num))
+        except (ValueError, KeyError, TypeError):
+          log("[recv corrupt packet]")
+      else:
+        log("[error] timeout")
+        break
+    except socket.timeout:
+      log("TimeOUT yo")
+      break
+  log("SENDING ANOTHER BATCH")
+  send_next_packet()
+
+  if len(MSG_BUFFER) == 0:
+    break
+sock.sendto(json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False}), dest)
+sys.exit(0)

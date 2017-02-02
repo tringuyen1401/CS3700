@@ -1,0 +1,24 @@
+Our initial process was to discuss how we wanted to approach this problem before touching any code, discussing the features we want, and the features
+we probably will need. At the lowest level, we knew that the sender needed to send packets (how many at once we didn't know at this point) as well as 
+read the ACKs send by the receiver and figure out what to do with that information. It was the job of the receiver to retrieve the data from the 
+sender and make sure the information is in order, and if not to handle it accordingly. We implemented code that after meeting up and discussing it,
+we realized we would need to start over. Our implementation was too simple, and required some polishing.
+
+When completely refactoring the code, we saw that the most important part when starting small and simple was making sure the receiver
+knew what to do with the data and making sure it's in order for output. So we started thinking about how the receiver needed to handle the 
+packets. So in order to make sure the sender knew something dropped or was out of order, we kept
+a version of the last ack we sent, so that when the packet fails we can notify the sender like
+in normal tcp. Our main source of information on whether or not the information was correct were
+the sequence numbers. We also kept track of the sequence numbers we've received. If the sequence
+number we received was in the buffer, we knew it was already sent before, and if it's less
+than the last ack we received then we received a duplicate. otherwise we took the data and 
+checked to make sure everything was in order and correct.
+
+Then we saw improvement on performance, we were passing more tests, but there were a few we were
+consistently failing. Our first thought was that the packets weren't getting sent quickly enough,
+so we wanted to address that first by safely increasing the rate of packets leaving the sender. 
+The first idea we had was to implement a congestion window, but after seeing how this isn't large
+enough for the windows to be useful we decided to send a flat amount first to see how that
+handled things and it handled it very well. Before that we implemented how the sender
+handles ACKs when they are correct, smaller, and even larger. Making sure that the sender
+knows when things went wrong and helping it decide what to do when it happens.

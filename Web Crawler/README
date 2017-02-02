@@ -1,0 +1,16 @@
+First we send a GET to Fakebook login page and then use the
+token received in the response along with our username and
+password to login to Fakebook. 
+
+If we are redirected to a website, it means our POST request is
+correct and the crawling will  begin. We will continue to check
+every link that doesn't redirect us outside of fakebook and then
+will check if they contain our secret flag, if we find new links
+and can't check them at the moment, add them to a list to craw
+later. We also add the links we visited to a list so that we
+won't get into a loop. We will finish when we find all 5 flags.
+
+The challenges that we faced are: 
+1) Figuring out the header used for HTTP 1.1, and how to handle
+CSRF token..
+2) the server could randomly return code 301, 403 or 500 for some requests hence we had to adjust our code to handle those situations thoroughly. 

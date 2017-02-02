@@ -1,0 +1,54 @@
+import socket
+import argparse
+import ssl
+
+def open_soc(host,neuid,port, ssl):
+	new_s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	string = 'cs3700fall2016 '
+	if (ssl):
+		new_s.connect((host,port))
+		s = socket.ssl(new_s)
+		s.write(string+'HELLO '+neuid+'\n')
+		result = s.read(1024)
+	else:
+       		s = new_s 
+		s.connect((host,port))
+		s.send(string+'HELLO '+neuid+'\n')
+		result = s.recv(1024)
+
+	while (result[:18] != 'cs3700fall2016 BYE'):
+		equ = result[21:len(result)-1]
+		cal = eval(equ)
+		if (ssl):
+			s.write(string + str(cal) + '\n')
+			result = s.read(1024)
+		else:
+	 		s.send(string + str(cal) + '\n')
+			result = s.recv(1024)
+
+	print result
+	if (ssl):
+		new_s.close()
+	else:
+		s.close()
+
+
+def main():
+	p = argparse.ArgumentParser()
+
+
+	p.add_argument('-p','--port',type=int, default=27993)
+	
+	p.add_argument('-s',action='store_true')
+	
+	p.add_argument('hostname')
+	p.add_argument('neuid')
+
+	args = p.parse_args()
+	
+	if (not args.s):
+		open_soc(args.hostname,args.neuid,args.port,False)
+	else:
+		open_soc(args.hostname,args.neuid,args.port,True)
+
+main()

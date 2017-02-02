@@ -1,0 +1,243 @@
+#!/usr/bin/python -u
+from lxml import html
+import socket
+import time
+import sys
+
+# Checks for correct arguments
+try:
+    username = sys.argv[1]
+    password = sys.argv[2]
+except IndexError:
+    print("No Username or Password provided!")
+    sys.exit()   
+ 
+# Connect to login page
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(('fring.ccs.neu.edu', 80))
+sock.send('GET /accounts/login/?next=/fakebook/ HTTP/1.1\r\n'
+                'Host: fring.ccs.neu.edu\r\n\r\n')
+
+body = sock.recv(20000)
+
+# Grab csrf token
+content = html.fromstring(body)
+token = content.xpath('//input[@name="csrfmiddlewaretoken"]/@value')
+csrf_token = token[0]
+
+# Get cookie data and csrf data from response
+body = body.split("\r\n")
+cookie_data = body[8]
+csrf_token_data = body[7]
+
+cookie_string = cookie_data.split(' ')[1]
+csrf_token_string = csrf_token_data.split(' ')[1]
+
+# Login to fakebook
+sock.send('POST /accounts/login/?next=/fakebook/ HTTP/1.1\r\n'
+                'Host: fring.ccs.neu.edu\r\n'
+                'Cookie: ' + csrf_token_string + ' ' + cookie_string + '\r\n' 
+                'Content-Type: application/x-www-form-urlencoded\r\n'
+                'Content-Length: 105\r\n\r\n'
+                'username=' + username + '&password=' + password + '&csrfmiddlewaretoken=' + csrf_token  + '&next=/fakebook/')
+
+# Grab login cookie
+check = sock.recv(20000)
+check = check.split('\r\n')
+cookie = check[7].split(' ')[1]
+ 
+# Grab homepage
+sock.send('GET /fakebook/ HTTP/1.1\r\n'
+                'Host: fring.ccs.neu.edu\r\n'
+                'Referer: http://fring.ccs.neu.edu/accounts/login/?next=/fakebook/\r\n'
+                'Cookie: ' + cookie + '\r\n\r\n')
+
+# Grab links for profiles
+login = sock.recv(100000)
+content = html.fromstring(login)
+links = content.xpath('//a/@href')[1:-3]
+
+seen = {'mailto:choffnes@ccs.neu.edu': True, '/fakebook/': True, 'http://www.ccs.neu.edu/home/choffnes/': True, 'http://www.northeastern.edu': True}
+
+# Set up dictionary for keeping track of visited links
+for i in links:
+    seen[i] = True
+
+# Keep track of flags and secret
+flags = []
+secrets = 0
+
+# Logs back onto fakebook
+def relog():
+    global seen
+    global links
+    global cookie
+    global cookie_string
+    global csrf_token
+    global sock
+
+    # Connect to fakebook and grab login page   
+    sock.connect(('fring.ccs.neu.edu', 80)) 
+    sock.send('GET /accounts/login/?next=/fakebook/ HTTP/1.1'
+                '\r\nHost: fring.ccs.neu.edu\r\n\r\n')
+
+    body = sock.recv(20000)
+
+    # Grab csrf token
+    content = html.fromstring(body)
+    token = content.xpath('//input[@name="csrfmiddlewaretoken"]/@value')
+    csrf_token = token[0]
+
+    # Get cookie data and csrf data from response
+    body = body.split("\r\n")
+    cookie_data = body[8]
+    csrf_token_data = body[7]
+
+    cookie_string = cookie_data.split(' ')[1]
+    csrf_token_string = csrf_token_data.split(' ')[1]
+
+    # Login to fakebook
+    sock.send('POST /accounts/login/?next=/fakebook/ HTTP/1.1\r\n'
+                'Host: fring.ccs.neu.edu\r\n'
+                'Cookie: ' + csrf_token_string + ' ' + cookie_string + '\r\n'
+                'Content-Type: application/x-www-form-urlencoded\r\n'
+                'Content-Length: 105\r\n\r\n'
+                'username='+ username + '&password=' + password
++ '&csrfmiddlewaretoken=' + csrf_token  + '&next=/fakebook/')
+
+    #/ Grab login cookie
+    check = sock.recv(20000)
+    check = check.split('\r\n')
+    if not len(check) < 7:
+        cookie = check[7].split(' ')[1]
+
+    # Grab homepage
+    sock.send('GET /fakebook/ HTTP/1.1\r\n'
+                'Host: fring.ccs.neu.edu\r\n'
+                'Referer: http://fring.ccs.neu.edu/accounts/login/?next=/fakebook/\r\n'
+                'Cookie: ' + cookie + '\r\n\r\n')
+
+    # login and grabs new data (there shouldn't be but just in case)
+    login = sock.recv(100000)
+    content = html.fromstring(login)
+    new_links = content.xpath('//a/@href')[1:-3]
+
+    for i in new_links:
+        if i not in seen:
+            links.insert(0, i)
+            seen[i] = True
+
+
+# Continue crawling until you find the 5 secrets or you run out of links
+while secrets < 5 and  len(links) > 0:
+    
+    profile = links.pop()
+
+    # set up http header request
+    http_request = 'GET ' + profile + ' HTTP/1.1\r\nHost: fring.ccs.neu.edu\r\nReferer: http://fring.ccs.neu.edu/fakebook/\r\nCookie: ' + cookie + '\r\n\r\n'
+
+    # sends request for profiles, waits .05 seconds to prevent sending to many requests too quickly
+    sock.send(http_request)
+    time.sleep(.05)
+
+    profilePage = sock.recv(8192) 
+ 
+    # Checks to see if the website returns nothing or 0
+    # Keeps relogging until webpage returned
+    webpageCheck = profilePage.split('\r\n')
+    if webpageCheck[0] == '0' or len(profilePage) == 0:
+        while webpageCheck[0] == '0' or len(profilePage) == 0:
+            sock.close()
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            relog()
+
+            sock.send(http_request)
+            time.sleep(.05)            
+
+            profilePage = sock.recv(8192)
+
+            webpageCheck = profilePage.split('\r\n')           
+ 
+
+    # Grabs response code
+    response_check = profilePage.split('\r\n')[0]
+    response_check = response_check.split(' ')[1]
+
+    # If internal server error, relog
+    if response_check == '500':
+        sock.close()
+    
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        relog()
+
+        links.append(profile)
+
+    # If not found, just move on to the next link
+    elif response_check == '403' or response_check == '404':
+        seen[profile] = True
+    
+    # If redirect, access given link and check for keys
+    elif response_check == '301':
+        redirect = profilePage.split('\r\n')
+        redirectLink = redirect[5]
+        
+        sock.send('GET ' +  redirectLink + 'HTTP/1.1\r\n'
+                'Host: fring.ccs.neu.edu\r\n'
+                'Referer: http://fring.ccs.neu.edu/accounts/login/?next=/fakebook/\r\n'
+                'Cookie: ' + cookie + '\r\n\r\n')
+        time.sleep(.05)
+
+        profilePage = sock.recv(100000)
+        content = html.fromstring(profilePage)
+        profileLinks = content.xpath('//a/@href')
+
+        # Checks to make sure the link is in fact a fakebook link
+        for i in profileLinks:    
+            if i not in seen and len(i) > 0 and i[0] == '/':
+            
+                fakebook_check = i.split('/')[1]
+
+                if fakebook_check == 'fakebook':
+                    seen[i] = True
+                    links.insert(0, i)
+
+        # Grabs H2 elements and checks for flags
+        flag_check = content.xpath('//h2/text()')
+
+        # Checks to make sure there's something there and it's not just random text
+        if not len(flag_check) == 0 and flag_check[0][0:4] == 'FLAG':
+            flags.append(flag_check[0])
+            secrets += 1
+
+    # Otherwise request was successful
+    else:
+        
+        # Adds new links to the queue
+        content = html.fromstring(profilePage)
+        profileLinks = content.xpath('//a/@href')
+ 
+        # Makes sure they're in fact fakebook links
+        for i in profileLinks:
+    
+            if i not in seen and len(i) > 0 and i[0] == '/':
+        
+                fakebook_check = i.split('/')[1]
+
+                if fakebook_check == 'fakebook':
+                    seen[i] = True
+                    links.insert(0, i)
+
+        # Checks H2 elements for flags and makes sure they're not random text
+        flag_check = content.xpath('//h2/text()')
+
+        if not len(flag_check) == 0 and flag_check[0][0:4] == 'FLAG':
+            flags.append(flag_check[0])
+            secrets += 1
+
+# Print secret flags
+for i in flags:
+    print i
+
+sock.close()
+
